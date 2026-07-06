@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <title>Colorisation ETAT IFC</title>
+
+  <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 16px;
+      font-size: 14px;
+      color: #222;
+    }
+
+    h2 {
+      margin-top: 0;
+      font-size: 18px;
+    }
+
+    button {
+      display: block;
+      width: 100%;
+      margin: 8px 0;
+      padding: 10px;
+      border: 1px solid #999;
+      background: #f5f5f5;
+      cursor: pointer;
+      font-weight: bold;
+    }
+
+    button:hover {
+      background: #e8e8e8;
+    }
+
+    .legend {
+      margin-top: 16px;
+      border: 1px solid #ccc;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      border-bottom: 1px solid #ddd;
+    }
+
+    .row:last-child {
+      border-bottom: none;
+    }
+
+    .color {
+      width: 40px;
+      height: 26px;
+      margin-right: 8px;
+    }
+
+    .label {
+      flex: 1;
+      padding: 6px;
+    }
+
+    #status {
+      margin-top: 12px;
+      padding: 8px;
+      background: #f2f2f2;
+      border: 1px solid #ddd;
+      min-height: 40px;
+      white-space: pre-line;
+    }
+  </style>
+</head>
+
+<body>
+  <h2>Colorisation IFC par ETAT</h2>
+
+  <button onclick="coloriserParEtat()">Colorer tous les objets par ETAT</button>
+  <button onclick="afficherPrioritaires()">Afficher uniquement DEGRADE + MEDIOCRE</button>
+  <button onclick="afficherSeulement('DEGRADE')">Afficher uniquement DEGRADE</button>
+  <button onclick="resetAffichage()">Réinitialiser l’affichage</button>
+
+  <div class="legend">
+    <div class="row">
+      <div class="color" style="background:#FF0000;"></div>
+      <div class="label">DEGRADE</div>
+    </div>
+    <div class="row">
+      <div class="color" style="background:#FFC000;"></div>
+      <div class="label">MEDIOCRE</div>
+    </div>
+    <div class="row">
+      <div class="color" style="background:#00B050;"></div>
+      <div class="label">SATISFAISANT</div>
+    </div>
+    <div class="row">
+      <div class="color" style="background:#92D050;"></div>
+      <div class="label">CORRECT</div>
+    </div>
+  </div>
+
+  <div id="status">Chargement de l’add-on...</div>
+
+  <script>
+    let API = null;
+
+    const CONFIG_ETAT = {
+      "DEGRADE": {
+        color: "#FF0000",
+        label: "DEGRADE"
+      },
+      "MEDIOCRE": {
+        color: "#FFC000",
+        label: "MEDIOCRE"
+      },
+      "SATISFAISANT": {
+        color: "#00B050",
+        label: "SATISFAISANT"
+      },
+      "CORRECT": {
+        color: "#92D050",
+        label: "CORRECT"
+      }
+    };
+
+    function setStatus(message) {
+      document.getElementById("status").textContent = message;
+    }
+
+    function normaliserTexte(value) {
+      return String(value || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .trim()
+        .toUpperCase();
+    }
+
+    async function init() {
+      try {
+        API = await TrimbleConnectWorkspace.connect(window.parent, (event, data) => {
+          console.log("Trimble event:", event, data);
+        });
+
+        setStatus("Add-on prêt.\nOuvre tes IFC dans le Viewer 3D puis clique sur le bouton de colorisation.");
+      } catch (error) {
+        console.error(error);
+        setStatus("Erreur : impossible de connecter l’add-on au Viewer Trimble Connect.");
+      }
+    }
+
+    function trouverValeurEtat(objectProperties) {
+      if (!objectProperties || !objectProperties.properties) {
+        return null;
+      }
+
+      for (const propertySet of objectProperties.properties) {
+        if (!propertySet.properties) {
+          continue;
+        }
+
+        for (const prop of propertySet.properties) {
+          const nomPropriete = normaliserTexte(prop.name);
+          const valeurPropriete = normaliserTexte(prop.value);
+
+          /*
+            On cherche une propriété nommée ETAT.
+            Le test includes("ETAT") permet aussi de retrouver des noms du type :
+            - PSET_VRD.ETAT
+            - IC34_ETAT
+            - Etat ouvrage
+          */
+          if (nomPropriete === "ETAT" || nomPropriete.includes("ETAT")) {
+            if (CONFIG_ETAT[valeurPropriete]) {
+              return valeurPropriete;
+            }
+          }
+        }
+      }
+
+      return null;
+    }
+
+    function couperTableau(tableau, taille) {
+      const morceaux = [];
+      for (let i = 0; i < tableau.length; i += taille) {
+        morceaux.push(tableau.slice(i, i + taille));
+      }
+      return morceaux;
+    }
+
+    async function recupererObjetsParEtat() {
+      const groupesParEtat = {
+        "DEGRADE": {},
+        "MEDIOCRE": {},
+        "SATISFAISANT": {},
+        "CORRECT": {}
+      };
+
+      const objetsModele = await API.viewer.getObjects();
+
+      for (const groupeModele of objetsModele) {
+        const modelId = groupeModele.modelId;
+        const objectIds = groupeModele.objects.map(obj => obj.id);
+
+        const morceaux = couperTableau(objectIds, 500);
+
+        for (const morceauIds of morceaux) {
+          const proprietesObjets = await API.viewer.getObjectProperties(modelId, morceauIds);
+
+          for (const objet of proprietesObjets) {
+            const etat = trouverValeurEtat(objet);
+
+            if (etat) {
+              if (!groupesParEtat[etat][modelId]) {
+                groupesParEtat[etat][modelId] = [];
+              }
+
+              groupesParEtat[etat][modelId].push(objet.id);
+            }
+          }
+        }
+      }
+
+      return groupesParEtat;
+    }
+
+    async function appliquerCouleur(modelId, objectRuntimeIds, couleur) {
+      if (!objectRuntimeIds || objectRuntimeIds.length === 0) {
+        return;
+      }
+
+      const morceaux = couperTableau(objectRuntimeIds, 500);
+
+      for (const ids of morceaux) {
+        await API.viewer.setObjectState(
+          {
+            modelObjectIds: [
+              {
+                modelId: modelId,
+                objectRuntimeIds: ids,
+                recursive: false
+              }
+            ]
+          },
+          {
+            color: couleur,
+            visible: true
+          }
+        );
+      }
+    }
+
+    async function coloriserParEtat() {
+      try {
+        setStatus("Analyse des attributs IFC en cours...");
+
+        await resetAffichage(false);
+
+        const groupes = await recupererObjetsParEtat();
+
+        let rapport = "Colorisation terminée :\n";
+
+        for (const etat of Object.keys(CONFIG_ETAT)) {
+          let totalEtat = 0;
+
+          for (const modelId of Object.keys(groupes[etat])) {
+            const ids = groupes[etat][modelId];
+            totalEtat += ids.length;
+            await appliquerCouleur(modelId, ids, CONFIG_ETAT[etat].color);
+          }
+
+          rapport += `${etat} : ${totalEtat} objet(s)\n`;
+        }
+
+        setStatus(rapport);
+      } catch (error) {
+        console.error(error);
+        setStatus("Erreur pendant la colorisation. Vérifie que les IFC sont bien ouverts dans le Viewer 3D et que l’attribut ETAT existe.");
+      }
+    }
+
+    async function afficherSeulement(etatRecherche) {
+      try {
+        setStatus(`Recherche des objets ${etatRecherche}...`);
+
+        await API.viewer.setObjectState(undefined, {
+          visible: false
+        });
+
+        const groupes = await recupererObjetsParEtat();
+
+        let total = 0;
+
+        for (const modelId of Object.keys(groupes[etatRecherche])) {
+          const ids = groupes[etatRecherche][modelId];
+          total += ids.length;
+          await appliquerCouleur(modelId, ids, CONFIG_ETAT[etatRecherche].color);
+        }
+
+        setStatus(`${etatRecherche} affiché uniquement : ${total} objet(s).`);
+      } catch (error) {
+        console.error(error);
+        setStatus("Erreur pendant le filtrage.");
+      }
+    }
+
+    async function afficherPrioritaires() {
+      try {
+        setStatus("Affichage des éléments prioritaires...");
+
+        await API.viewer.setObjectState(undefined, {
+          visible: false
+        });
+
+        const groupes = await recupererObjetsParEtat();
+
+        let totalDegrade = 0;
+        let totalMediocre = 0;
+
+        for (const modelId of Object.keys(groupes["DEGRADE"])) {
+          const ids = groupes["DEGRADE"][modelId];
+          totalDegrade += ids.length;
+          await appliquerCouleur(modelId, ids, CONFIG_ETAT["DEGRADE"].color);
+        }
+
+        for (const modelId of Object.keys(groupes["MEDIOCRE"])) {
+          const ids = groupes["MEDIOCRE"][modelId];
+          totalMediocre += ids.length;
+          await appliquerCouleur(modelId, ids, CONFIG_ETAT["MEDIOCRE"].color);
+        }
+
+        setStatus(
+          `Éléments prioritaires affichés :\nDEGRADE : ${totalDegrade} objet(s)\nMEDIOCRE : ${totalMediocre} objet(s)`
+        );
+      } catch (error) {
+        console.error(error);
+        setStatus("Erreur pendant l’affichage des éléments prioritaires.");
+      }
+    }
+
+    async function resetAffichage(afficherMessage = true) {
+      try {
+        await API.viewer.setObjectState(undefined, {
+          color: "reset",
+          visible: "reset"
+        });
+
+        if (afficherMessage) {
+          setStatus("Affichage réinitialisé.");
+        }
+      } catch (error) {
+        console.error(error);
+        setStatus("Erreur pendant la réinitialisation.");
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>
